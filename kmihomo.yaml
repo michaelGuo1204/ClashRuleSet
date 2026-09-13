@@ -1,0 +1,341 @@
+# Mihomo (Clash Meta) 配置 - 基于 kclash.ini 生成
+# 配置文件写法参考 mihomo wiki: https://wiki.metacubex.one/
+
+allow-lan: true
+mode: rule
+bind-address: "0.0.0.0"
+mixed-port: 7890
+ipv6: false
+unified-delay: true
+log-level: warning
+find-process-mode: strict
+global-client-fingerprint: chrome
+tcp-concurrent: true
+keep-alive-idle: 600
+keep-alive-interval: 15
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+secret: ""
+external-controller: 0.0.0.0:9090
+external-ui: ui
+external-ui-name: zashboard
+external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist-no-fonts.zip
+
+# ============================================
+# 订阅配置 [每天更新一次订阅，每 300 秒健康检查]
+# ============================================
+NodeParam: &NodeParam {type: http, interval: 86400, proxy: DIRECT, health-check: {enable: true, url: 'https://www.gstatic.com/generate_204', interval: 300}}
+
+proxy-providers:
+  # 在此处填入你的订阅地址
+  main_sub:
+    <<: *NodeParam
+    url: '{{SUB_URL}}'
+    path: './proxy-providers/main.yaml'
+
+# ============================================
+# 入站 - TUN 模式
+# ============================================
+tun:
+  enable: true
+  stack: system
+  strict-route: true
+  dns-hijack: ["any:53", "tcp://any:53"]
+  mtu: 1500
+  auto-route: true
+  auto-redirect: false
+  auto-detect-interface: true
+
+# ============================================
+# DNS 配置
+# ============================================
+dns:
+  enable: true
+  cache-algorithm: arc
+  listen: 0.0.0.0:1053
+  ipv6: false
+  respect-rules: true
+  use-hosts: true
+  use-system-hosts: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter-mode: blacklist
+  fake-ip-filter:
+    - rule-set:fakeipfilter
+  nameserver:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
+  proxy-server-nameserver:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
+
+# ============================================
+# 嗅探配置
+# ============================================
+sniffer:
+  enable: true
+  parse-pure-ip: true
+  sniff:
+    HTTP:
+      ports: [80, 8080-8880]
+      override-destination: true
+    TLS:
+      ports: [443, 8443]
+    QUIC:
+      ports: [443, 8443]
+  skip-domain:
+    - "Mijia Cloud"
+    - "+.push.apple.com"
+
+
+
+# ============================================
+# 策略组模板
+# ============================================
+Select: &Select {type: select, url: 'https://www.gstatic.com/generate_204', disable-udp: false, hidden: false, include-all: true}
+UrlTest: &UrlTest {type: url-test, url: 'https://www.gstatic.com/generate_204', disable-udp: false, hidden: true, include-all: true, interval: 300, lazy: true, tolerance: 150, timeout: 2000, max-failed-times: 3}
+FallBack: &FallBack {type: fallback, url: 'https://www.gstatic.com/generate_204', disable-udp: false, hidden: true, include-all: true, interval: 300, lazy: true, timeout: 2000, max-failed-times: 3}
+
+# ============================================
+# 策略组引用锚点
+# ============================================
+# 代理优先
+pg_Proxy: &pg_Proxy [
+  自动选择, 手动选择, DIRECT
+]
+# DIRECT优先
+pg_Direct: &pg_Direct [
+  DIRECT, 自动选择
+]
+# AI 专用 (美国优先)
+pg_AI: &pg_AI [
+  手动选择, 自动选择, DIRECT
+]
+
+# ============================================
+# 策略组
+# ============================================
+proxy-groups:
+  # --- 底层节点组 ---
+  - {name: 自动选择, <<: *UrlTest}
+  - {name: 手动选择, <<: *Select}
+
+  # --- 功能策略组 ---
+  - {name: AI服务, type: select, proxies: *pg_AI}
+  - {name: 开发相关, type: select, proxies: *pg_Proxy}
+  - {name: 社交媒体, type: select, proxies: *pg_Proxy}
+  - {name: 影音娱乐, type: select, proxies: *pg_Proxy}
+  - {name: 教育学习, type: select, proxies: *pg_Proxy}
+  - {name: 微软/苹果服务, type: select, proxies: *pg_Direct}
+  - {name: 游戏平台, type: select, proxies: *pg_Direct}
+  - {name: 广告拦截, type: select, proxies: [REJECT, DIRECT]}
+  - {name: 漏网之鱼, type: select, proxies: [自动选择, 手动选择, DIRECT]}
+
+# ============================================
+# 分流规则 (按优先级排列)
+# ============================================
+rules:
+  # --- 第一层：特殊处理 ---
+  # Block UDP 443 (QUIC) to force TCP fallback for AI services (see README)
+  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
+
+  # --- 第二层：局域网与DIRECT ---
+  - RULE-SET,private_domain,DIRECT
+  - RULE-SET,private_ip,DIRECT,no-resolve
+  - RULE-SET,unban,DIRECT
+
+  # --- 第三层：广告拦截 ---
+  - RULE-SET,banad,广告拦截
+  - RULE-SET,banprogramad,广告拦截
+
+  # --- 第四层：AI 服务 (高优先级) ---
+  - RULE-SET,aidomain,AI服务
+
+  # --- 第五层：开发者工具 ---
+  - RULE-SET,developer,开发相关
+
+  # --- 第六层：常用服务 ---
+  - RULE-SET,microsoft,微软/苹果服务
+  - RULE-SET,apple_domain,微软/苹果服务
+  - RULE-SET,telegram_domain,社交媒体
+  - RULE-SET,telegram_ip,社交媒体,no-resolve
+
+  # --- 第七层：媒体服务 ---
+  - RULE-SET,web3,影音娱乐
+  - RULE-SET,spotify,影音娱乐
+  - RULE-SET,youtube,影音娱乐
+  - RULE-SET,netflix,影音娱乐
+  - RULE-SET,netflixip,影音娱乐,no-resolve
+  - RULE-SET,disneyplus,影音娱乐
+  - RULE-SET,proxymedia,影音娱乐
+
+  # --- 第八层：游戏平台 ---
+  - RULE-SET,epic,游戏平台
+  - RULE-SET,sony,游戏平台
+  - RULE-SET,steam,游戏平台
+
+  # --- 第九层：教育 ---
+  - RULE-SET,khan,教育学习
+  - RULE-SET,edutools,教育学习
+
+  # --- 第十层：哔哩哔哩 (DIRECT) ---
+  - RULE-SET,bilibili,DIRECT
+  - RULE-SET,bilibilihmt,DIRECT
+
+  # --- 第十一层：国内DIRECT ---
+  - RULE-SET,chinamedia,DIRECT
+  - RULE-SET,chinadomain,DIRECT
+  - RULE-SET,chinacompanyip,DIRECT,no-resolve
+  - RULE-SET,download,DIRECT
+  - RULE-SET,cn_ip,DIRECT,no-resolve
+
+  # --- 第十二层：代理 GFW ---
+  - RULE-SET,proxygfwlist,自动选择
+
+  # --- 兜底规则 ---
+  - GEOIP,CN,DIRECT,no-resolve
+  - MATCH,漏网之鱼
+
+# ============================================
+# 规则集定义
+# ============================================
+RuleSet_classical_text: &RuleSet_classical_text {type: http, behavior: classical, interval: 43200, format: text}
+RuleSet_domain_mrs: &RuleSet_domain_mrs {type: http, behavior: domain, interval: 43200, format: mrs}
+RuleSet_ipcidr_mrs: &RuleSet_ipcidr_mrs {type: http, behavior: ipcidr, interval: 43200, format: mrs}
+
+rule-providers:
+  # --- fake-ip 过滤 ---
+  fakeipfilter:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/juewuy/ShellCrash/refs/heads/dev/public/fake_ip_filter.list"
+    path: ./rule-providers/fakeipfilter.list
+
+  # --- 通用域名/IP 规则 (MetaCubeX mrs 格式) ---
+  private_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs"
+    path: ./rule-providers/private_domain.mrs
+  private_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/private.mrs"
+    path: ./rule-providers/private_ip.mrs
+  apple_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/apple.mrs"
+    path: ./rule-providers/apple_domain.mrs
+  telegram_domain:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/telegram.mrs"
+    path: ./rule-providers/telegram_domain.mrs
+  telegram_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo-lite/geoip/telegram.mrs"
+    path: ./rule-providers/telegram_ip.mrs
+  youtube:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs"
+    path: ./rule-providers/youtube_domain.mrs
+  netflix:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/netflix.mrs"
+    path: ./rule-providers/netflix_domain.mrs
+  steam:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/steam.mrs"
+    path: ./rule-providers/steam_domain.mrs
+  sony:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/sony.mrs"
+    path: ./rule-providers/sony_domain.mrs
+  microsoft:
+    <<: *RuleSet_domain_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/microsoft.mrs"
+    path: ./rule-providers/microsoft_domain.mrs
+  cn_ip:
+    <<: *RuleSet_ipcidr_mrs
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs"
+    path: ./rule-providers/cn_ip.mrs
+
+  # --- 自定义规则集 (classical text 格式，来自你的仓库) ---
+  unban:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/UnBan.list"
+    path: ./rule-providers/unban.list
+  banad:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/BanAD.list"
+    path: ./rule-providers/banad.list
+  banprogramad:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/BanProgramAD.list"
+    path: ./rule-providers/banprogramad.list
+  aidomain:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/AiDomain.list"
+    path: ./rule-providers/aidomain.list
+  developer:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/Developer.list"
+    path: ./rule-providers/developer.list
+  web3:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Web3.list"
+    path: ./rule-providers/web3.list
+  spotify:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/Spotify.list"
+    path: ./rule-providers/spotify.list
+  epic:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/Epic.list"
+    path: ./rule-providers/epic.list
+  netflixip:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/NetflixIP.list"
+    path: ./rule-providers/netflixip.list
+  disneyplus:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/DisneyPlus.list"
+    path: ./rule-providers/disneyplus.list
+  khan:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/Khan.list"
+    path: ./rule-providers/khan.list
+  edutools:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/Edutools.list"
+    path: ./rule-providers/edutools.list
+  bilibili:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/Bilibili.list"
+    path: ./rule-providers/bilibili.list
+  bilibilihmt:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Ruleset/BilibiliHMT.list"
+    path: ./rule-providers/bilibilihmt.list
+  chinamedia:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/ChinaMedia.list"
+    path: ./rule-providers/chinamedia.list
+  proxymedia:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/ProxyMedia.list"
+    path: ./rule-providers/proxymedia.list
+  proxygfwlist:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/ProxyGFWlist.list"
+    path: ./rule-providers/proxygfwlist.list
+  chinadomain:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/ChinaDomain.list"
+    path: ./rule-providers/chinadomain.list
+  chinacompanyip:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/ChinaCompanyIp.list"
+    path: ./rule-providers/chinacompanyip.list
+  download:
+    <<: *RuleSet_classical_text
+    url: "https://raw.githubusercontent.com/szkane/ClashRuleSet/main/Clash/Download.list"
+    path: ./rule-providers/download.list

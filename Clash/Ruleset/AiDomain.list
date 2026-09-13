@@ -1,5 +1,10 @@
 # 3rd part AI router
 
+# Block UDP port 443 (QUIC/HTTP3) to force TCP fallback
+# This ensures AI services work properly through Hysteria2 proxy
+# See README.md for detailed explanation
+AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
+
 DOMAIN-SUFFIX,cerebras.ai
 
 # 内容：OpenAi,claude,recraft,poe,bing,gemini,perplexity
